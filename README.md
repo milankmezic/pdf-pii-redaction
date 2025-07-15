@@ -1,5 +1,7 @@
 # 🔒 PDF PII Redactor - Proof of Concept
 
+https://www.youtube.com/watch?v=ij8FuIj3H0c
+
 **Demonstration tool for exploring AI-powered PDF redaction.**
 
 PDF PII Redactor is a proof of concept that uses AI to detect and redact Personally Identifiable Information (PII) from PDF documents. Built with Microsoft Presidio and designed for local processing, it is intended for testing, demonstration, and educational use only.
