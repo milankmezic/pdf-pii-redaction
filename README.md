@@ -1,6 +1,7 @@
 # 🔒 PDF PII Redactor - Proof of Concept
 
-https://www.youtube.com/watch?v=ij8FuIj3H0c
+[![Watch on YouTube](https://img.youtube.com/vi/ij8FuIj3H0c/0.jpg)](https://www.youtube.com/watch?v=ij8FuIj3H0c)
+
 
 **Demonstration tool for exploring AI-powered PDF redaction.**
 
