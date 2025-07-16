@@ -1,4 +1,4 @@
-# 🔒 PDF PII Redactor Locally - Proof of Concept
+# 🔒 PDF PII Redactor - Local - Proof of Concept
 
 [![Watch on YouTube](https://img.youtube.com/vi/ij8FuIj3H0c/0.jpg)](https://www.youtube.com/watch?v=ij8FuIj3H0c)
 
