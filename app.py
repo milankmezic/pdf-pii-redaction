@@ -7,6 +7,13 @@ from custom_recognizers import get_custom_recognizers
 import io
 import pytesseract
 from PIL import Image
+import requests
+import tempfile
+import os
+import pathlib
+from pathlib import Path
+import pandas as pd
+import datetime
 
 # Set up the page configuration for a nice looking interface
 st.set_page_config(
@@ -117,10 +124,285 @@ def redact_pdf_with_pii(pdf_file, pii_entities):
         st.error(f"Error redacting PDF: {str(e)}")
         return None, []
 
+def get_file_browser_data(directory_path):
+    """
+    Get list of directories and PDF files in the specified directory
+    """
+    items = []
+    
+    try:
+        path = Path(directory_path)
+        if not path.exists():
+            return items
+            
+        # Add parent directory option if not at root
+        if path.parent != path:
+            items.append({
+                'name': '📁 .. (Parent Directory)',
+                'path': str(path.parent),
+                'type': 'parent',
+                'size': '',
+                'modified': ''
+            })
+        
+        # Get all items in directory
+        for item in sorted(path.iterdir()):
+            if item.is_dir():
+                items.append({
+                    'name': f'📁 {item.name}',
+                    'path': str(item),
+                    'type': 'directory',
+                    'size': '',
+                    'modified': ''
+                })
+            elif item.suffix.lower() == '.pdf':
+                try:
+                    stat = item.stat()
+                    size = stat.st_size
+                    
+                    # Format size
+                    if size < 1024:
+                        size_str = f"{size} B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{size / (1024 * 1024):.1f} MB"
+                    
+                    # Format modified date
+                    modified_time = datetime.datetime.fromtimestamp(stat.st_mtime)
+                    modified_str = modified_time.strftime("%Y-%m-%d %H:%M")
+                    
+                    items.append({
+                        'name': f'📄 {item.name}',
+                        'path': str(item),
+                        'type': 'pdf',
+                        'size': size_str,
+                        'modified': modified_str,
+                        'size_bytes': size,
+                        'modified_timestamp': stat.st_mtime
+                    })
+                except:
+                    pass  # Skip files we can't access
+    except PermissionError:
+        st.error("Permission denied accessing this directory")
+    except Exception as e:
+        st.error(f"Error accessing directory: {e}")
+    
+    return items
+
+def create_file_browser(directory_path):
+    """
+    Create an interactive file browser interface for the main view
+    """
+    # Initialize session state for file browser
+    if 'selected_files' not in st.session_state:
+        st.session_state.selected_files = []
+    
+    st.header(f"📁 Browse Directory: {directory_path}")
+    
+    # Add parent directory button if not at root
+    current_path = Path(directory_path)
+    if current_path.parent != current_path:  # Not at root directory
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("📁 ⬆️ Go Up", use_container_width=True, help="Go to parent directory"):
+                parent_dir = str(current_path.parent)
+                st.session_state.current_directory = parent_dir
+                # Update URL parameter to reflect current directory
+                st.query_params['dir'] = parent_dir
+                st.rerun()
+        with col2:
+            st.write(f"**Parent:** `{current_path.parent}`")
+    
+    # Get directory contents
+    items = get_file_browser_data(directory_path)
+    
+    # Navigation section
+    directories = [item for item in items if item['type'] in ['parent', 'directory']]
+    if directories:
+        st.subheader("📁 Navigate to Directory")
+        
+        # Auto-navigate when dropdown selection changes
+        def on_directory_change():
+            selected_dir = st.session_state.dir_selector
+            if selected_dir and selected_dir != st.session_state.current_directory:
+                st.session_state.current_directory = selected_dir
+                # Update URL parameter to reflect current directory
+                st.query_params['dir'] = selected_dir
+        
+        # Find the index of current directory in the options (default to 0 if not found)
+        current_index = 0
+        directory_paths = [item['path'] for item in directories]
+        try:
+            current_index = directory_paths.index(st.session_state.current_directory)
+        except ValueError:
+            # Current directory not in list, keep default 0
+            pass
+        
+        selected_dir = st.selectbox(
+            "Select Directory (auto-navigates on change)",
+            options=directory_paths,
+            format_func=lambda x: next(item['name'] for item in directories if item['path'] == x),
+            key="dir_selector",
+            on_change=on_directory_change,
+            index=current_index
+        )
+    
+    # PDF files section
+    pdf_files = [item for item in items if item['type'] == 'pdf']
+    if pdf_files:
+        st.subheader("📄 Select PDF Files for Redaction")
+        
+        # Create DataFrame for the file table
+        df_data = []
+        for item in pdf_files:
+            df_data.append({
+                'Select': item['path'] in st.session_state.selected_files,
+                'File Name': item['name'].replace('📄 ', ''),
+                'Size': item['size'],
+                'Modified': item['modified'],
+                'Path': item['path']  # Hidden column for tracking
+            })
+        
+        if df_data:
+            # Create editable dataframe
+            df = pd.DataFrame(df_data)
+            edited_df = st.data_editor(
+                df.drop('Path', axis=1),  # Don't show path column
+                column_config={
+                    "Select": st.column_config.CheckboxColumn(
+                        "Select",
+                        help="Select files to process",
+                        default=False,
+                    ),
+                    "File Name": st.column_config.TextColumn(
+                        "File Name",
+                        help="PDF file name",
+                        disabled=True,
+                        width="large"
+                    ),
+                    "Size": st.column_config.TextColumn(
+                        "Size",
+                        help="File size",
+                        disabled=True,
+                        width="small"
+                    ),
+                    "Modified": st.column_config.TextColumn(
+                        "Last Modified",
+                        help="Last modification date",
+                        disabled=True,
+                        width="medium"
+                    ),
+                },
+                disabled=["File Name", "Size", "Modified"],
+                hide_index=True,
+                use_container_width=True,
+                key="file_selector"
+            )
+            
+            # Update selected files based on checkbox changes
+            selected_files = []
+            for i, row in edited_df.iterrows():
+                if row['Select']:
+                    # Find the corresponding file path
+                    file_name = row['File Name']
+                    for item in pdf_files:
+                        if item['name'].replace('📄 ', '') == file_name:
+                            selected_files.append(item['path'])
+                            break
+            
+            st.session_state.selected_files = selected_files
+            
+            # Control buttons
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("☑️ Select All", use_container_width=True):
+                    st.session_state.selected_files = [item['path'] for item in pdf_files]
+                    st.rerun()
+            
+            with col2:
+                if st.button("❌ Clear All", use_container_width=True):
+                    st.session_state.selected_files = []
+                    st.rerun()
+            
+            with col3:
+                if st.session_state.selected_files and st.button("🔒 Redact Selected Files", use_container_width=True, type="primary"):
+                    return True  # Signal to process files
+            
+            # Show selection count
+            if selected_files:
+                st.success(f"Selected {len(selected_files)} file(s)")
+    else:
+        st.info("No PDF files found in this directory")
+    
+    return False  # No processing requested
+
+def download_pdf_from_url(url):
+    """
+    Download a PDF from a URL and return it as a file-like object
+    """
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        # Create a file-like object from the response content
+        pdf_content = io.BytesIO(response.content)
+        
+        # Create a mock uploaded file object
+        class MockUploadedFile:
+            def __init__(self, content, name):
+                self.content = content
+                self.name = name
+                self.type = "application/pdf"
+                self.size = len(content.getvalue())
+            
+            def read(self, size=-1):
+                return self.content.read(size)
+            
+            def seek(self, position, whence=0):
+                return self.content.seek(position, whence)
+            
+            def tell(self):
+                return self.content.tell()
+            
+            def getvalue(self):
+                return self.content.getvalue()
+        
+        return MockUploadedFile(pdf_content, url.split('/')[-1])
+    
+    except Exception as e:
+        st.error(f"Error downloading PDF: {e}")
+        return None
+
 def main():
     # Initialize session state variables first
     if 'disclaimer_accepted' not in st.session_state:
         st.session_state.disclaimer_accepted = False
+    
+    # Handle URL parameters for directory navigation
+    query_params = st.query_params
+    if 'dir' in query_params and query_params['dir']:
+        # If there's a directory in the URL, use it
+        url_directory = query_params['dir']
+        if Path(url_directory).exists() and Path(url_directory).is_dir():
+            st.session_state.current_directory = url_directory
+        else:
+            # If the URL directory doesn't exist, fall back to home and clear the param
+            st.session_state.current_directory = str(Path.home())
+            st.query_params.clear()
+            st.query_params['dir'] = st.session_state.current_directory
+    elif 'current_directory' not in st.session_state:
+        # First time visit - set to home directory
+        st.session_state.current_directory = str(Path.home())
+        # Set URL parameter to reflect current directory
+        st.query_params['dir'] = st.session_state.current_directory
+    else:
+        # Ensure URL parameter matches current directory
+        if 'dir' not in query_params or query_params['dir'] != st.session_state.current_directory:
+            st.query_params['dir'] = st.session_state.current_directory
+    
+    if 'process_mode' not in st.session_state:
+        st.session_state.process_mode = None
     
     # Main interface - this is what users see when they visit the app
     # Hide the title when processing is done
@@ -141,14 +423,49 @@ def main():
             st.session_state.disclaimer_accepted = True
             st.rerun()
         
+        # Show general information and disclaimer together
+        st.markdown("""
+        ### 🔒 PDF PII Redactor - Proof of Concept
+        
+        **🔒 Secure Document Processing (Proof of Concept)**
+        
+        This tool demonstrates how AI can help detect and redact Personally Identifiable Information (PII) from PDF documents. It is designed for testing, demonstration, and educational purposes only.
+        
+        **How to use:**
+        - 📁 **Browse Directory**: Enter a local directory path in the sidebar to browse and select multiple PDF files
+        - 🌐 **Process URL**: Enter a PDF URL to download and process a single file  
+        - 📤 **Upload File**: Upload a single PDF file directly
+        
+        **Potential use cases:** Exploring privacy workflows for legal, medical, financial, research, and other sensitive documents.
+        """)
+        
+        st.markdown("""
+        ### 🔒 Privacy & Security
+        - All processing happens locally or in secure cloud environments
+        - No data is stored or transmitted to third parties
+        - Your documents remain private and secure
+        """)
+        
+        st.markdown("""
+        ### 📚 More Information
+        **GitHub Repository:** [pdf-pii-redaction](https://github.com/milankmezic/pdf-pii-redaction)
+        
+        **Support & Feedback:**
+        - 📝 [Report Issues](https://github.com/milankmezic/pdf-pii-redaction/issues)
+        - 💡 [Request Features](https://github.com/milankmezic/pdf-pii-redaction/issues/new)
+        - 📖 [View Documentation](https://github.com/milankmezic/pdf-pii-redaction#readme)
+        - ⭐ [Star Repository](https://github.com/milankmezic/pdf-pii-redaction)
+        - 🔄 [Fork Project](https://github.com/milankmezic/pdf-pii-redaction/fork)
+        
+        **Commercial Use:** Commercial version managed by [NextAutomatica](https://nextautomatica.com)
+        
+        **Third-Party Libraries:** This project uses open-source libraries including Microsoft Presidio, PyMuPDF, pdfplumber, and others. Please refer to their respective licenses for commercial use.
+        """)
+        
         st.warning("""
         **⚠️ IMPORTANT DISCLAIMER**
         
         This is a **PROOF OF CONCEPT** service and is **NOT INTENDED FOR PRODUCTION USE**.
-        
-        **Proof of Concept**
-        
-        This service works both in cloud and locally for maximum privacy and security. All processing happens on your local machine or secure cloud environment.
         
         - This service is provided "AS IS" without any warranties
         - No guarantee is provided for complete or accurate PII detection
@@ -165,6 +482,38 @@ def main():
     with st.sidebar:
         st.header("PDF PII Redactor")
         
+        # URL/Path input section
+        st.subheader("🌐 Browse Directory or URL")
+        with st.form("url_form"):
+            current_path = st.text_input(
+                "Directory Path or URL",
+                value=st.session_state.current_directory,
+                placeholder="Enter local directory path or PDF URL...",
+                help="Enter a local directory path to browse files, or paste a PDF URL to download and process"
+            )
+            
+            go_clicked = st.form_submit_button("🔍 Go", use_container_width=True)
+        
+        # Handle form submission
+        if go_clicked and current_path:
+            # Check if it's a URL
+            if current_path.startswith(('http://', 'https://')):
+                st.session_state.process_mode = 'url'
+                st.session_state.pdf_url = current_path
+                st.rerun()
+            else:
+                # Handle directory navigation
+                if Path(current_path).exists() and Path(current_path).is_dir():
+                    st.session_state.current_directory = current_path
+                    st.session_state.process_mode = 'browse'
+                    # Update URL parameter to reflect current directory
+                    st.query_params['dir'] = current_path
+                    st.rerun()
+                else:
+                    st.error("Directory does not exist or is not accessible")
+        
+        st.divider()
+        
         # Hide upload text after first redaction
         if 'has_processed' not in st.session_state:
             st.session_state.has_processed = False
@@ -172,7 +521,7 @@ def main():
         upload_help = None if st.session_state.has_processed else "Upload a PDF file to automatically detect and redact sensitive information"
         
         uploaded_file = st.file_uploader(
-            "",
+            "📤 Or Upload Single PDF",
             type=['pdf'],
             help=upload_help
         )
@@ -180,9 +529,184 @@ def main():
         if uploaded_file is not None:
             # Track uploaded file in session state
             st.session_state.uploaded_file = uploaded_file.name
+            st.session_state.process_mode = 'upload'
     
     # Main content area
-    if uploaded_file is not None:
+    # Handle URL processing
+    if st.session_state.get('process_mode') == 'url' and 'pdf_url' in st.session_state:
+        pdf_url = st.session_state.pdf_url
+        
+        st.header("🌐 Processing PDF from URL")
+        st.write(f"**URL:** {pdf_url}")
+        
+        # Download and process the PDF
+        downloaded_file = download_pdf_from_url(pdf_url)
+        if downloaded_file:
+            # Process the downloaded file immediately
+            with st.spinner(f"Processing {downloaded_file.name}..."):
+                # Step 1: Extract text from the PDF
+                text = extract_text_from_pdf(downloaded_file)
+                
+                if text:
+                    # Step 2: Use AI to find sensitive information
+                    pii_results = detect_pii(text)
+                    
+                    if pii_results:
+                        # Process similar to upload mode
+                        entity_categories = {}
+                        entity_list = []
+                        
+                        friendly_names = {
+                            "US_SSN": "Social Security Number",
+                            "MEDICAL_RECORD": "Medical Record #",
+                            "DEVICE_ID": "Device ID",
+                            "LICENSE_PLATE": "License Plate",
+                            "FULL_ADDRESS": "Address",
+                            "POSTAL_CODE": "Postal Code"
+                        }
+                        
+                        for entity in pii_results:
+                            category = entity.entity_type
+                            value = text[entity.start:entity.end]
+                            entity_list.append({'text': value, 'entity_type': category})
+                            
+                            display_category = friendly_names.get(category, category)
+                            if display_category not in entity_categories:
+                                entity_categories[display_category] = []
+                            entity_categories[display_category].append(value)
+                        
+                        # Step 3: Create redacted PDF
+                        redacted_pdf_bytes, audit_trail = redact_pdf_with_pii(downloaded_file, entity_list)
+                        
+                        if redacted_pdf_bytes:
+                            # Show results similar to upload processing
+                            st.success("✅ PII Detection and Redaction Complete!")
+                            
+                            # Download button for redacted PDF
+                            st.download_button(
+                                label="📥 Download Redacted PDF",
+                                data=redacted_pdf_bytes,
+                                file_name=f"redacted_{downloaded_file.name}",
+                                mime="application/pdf"
+                            )
+                            
+                            # Show redaction details
+                            if audit_trail:
+                                with st.expander("🔍 View Redaction Details"):
+                                    st.info("**Audit Trail:**\n" + "\n".join(audit_trail))
+                        else:
+                            st.error("❌ Failed to redact PDF")
+                    else:
+                        st.info("✅ No PII detected in this document")
+                else:
+                    st.error("❌ Could not extract text from the PDF")
+        
+        # Clear the URL processing flag
+        if st.button("🔙 Back to Browse"):
+            st.session_state.process_mode = 'browse'
+            # Update URL parameter to reflect current directory
+            st.query_params['dir'] = st.session_state.current_directory
+            st.rerun()
+    
+    # Handle file browser mode
+    elif st.session_state.get('process_mode') == 'browse':
+        should_process = create_file_browser(st.session_state.current_directory)
+        
+        if should_process and st.session_state.selected_files:
+            st.header("📁 Processing Selected Files")
+            
+            for file_path in st.session_state.selected_files:
+                try:
+                    with open(file_path, 'rb') as f:
+                        file_content = f.read()
+                    
+                    # Create a mock file object
+                    class MockFile:
+                        def __init__(self, content, name):
+                            self.content = io.BytesIO(content)
+                            self.name = name
+                            self.type = "application/pdf"
+                            self.size = len(content)
+                        
+                        def read(self, size=-1):
+                            return self.content.read(size)
+                        
+                        def seek(self, position, whence=0):
+                            return self.content.seek(position, whence)
+                        
+                        def tell(self):
+                            return self.content.tell()
+                        
+                        def getvalue(self):
+                            return self.content.getvalue()
+                    
+                    file_obj = MockFile(file_content, Path(file_path).name)
+                    
+                    st.subheader(f"Processing: {file_obj.name}")
+                    
+                    with st.spinner(f"Processing {file_obj.name}..."):
+                        # Step 1: Extract text from the PDF
+                        text = extract_text_from_pdf(file_obj)
+                        
+                        if text:
+                            # Step 2: Use AI to find sensitive information
+                            pii_results = detect_pii(text)
+                            
+                            if pii_results:
+                                # Process PII results
+                                entity_categories = {}
+                                entity_list = []
+                                
+                                friendly_names = {
+                                    "US_SSN": "Social Security Number",
+                                    "MEDICAL_RECORD": "Medical Record #",
+                                    "DEVICE_ID": "Device ID",
+                                    "LICENSE_PLATE": "License Plate",
+                                    "FULL_ADDRESS": "Address",
+                                    "POSTAL_CODE": "Postal Code"
+                                }
+                                
+                                for entity in pii_results:
+                                    category = entity.entity_type
+                                    value = text[entity.start:entity.end]
+                                    entity_list.append({'text': value, 'entity_type': category})
+                                    
+                                    display_category = friendly_names.get(category, category)
+                                    if display_category not in entity_categories:
+                                        entity_categories[display_category] = []
+                                    entity_categories[display_category].append(value)
+                                
+                                # Step 3: Create redacted PDF
+                                redacted_pdf_bytes, audit_trail = redact_pdf_with_pii(file_obj, entity_list)
+                                
+                                if redacted_pdf_bytes:
+                                    st.success("✅ PII Detection and Redaction Complete!")
+                                    
+                                    # Download button for redacted PDF
+                                    st.download_button(
+                                        label="📥 Download Redacted PDF",
+                                        data=redacted_pdf_bytes,
+                                        file_name=f"redacted_{file_obj.name}",
+                                        mime="application/pdf",
+                                        key=f"download_browser_{file_obj.name}"
+                                    )
+                                    
+                                    # Show redaction details
+                                    if audit_trail:
+                                        with st.expander(f"🔍 View Redaction Details - {file_obj.name}"):
+                                            st.info("**Audit Trail:**\n" + "\n".join(audit_trail))
+                                else:
+                                    st.error(f"❌ Failed to redact {file_obj.name}")
+                            else:
+                                st.info(f"✅ No PII detected in {file_obj.name}")
+                        else:
+                            st.error(f"❌ Could not extract text from {file_obj.name}")
+                
+                except Exception as e:
+                    st.error(f"❌ Error processing {file_path}: {e}")
+    
+    # Handle single file upload mode
+    elif uploaded_file is not None:
         # Check if we've already processed this file to avoid duplicates
         if 'last_processed_file' not in st.session_state:
             st.session_state.last_processed_file = None
@@ -313,40 +837,17 @@ def main():
                     st.success("✅ No PII detected in the document")
             else:
                 st.error("❌ Failed to extract text from PDF")
+    
+    # Default view - show file browser or information
     else:
-        # Show information when no file is uploaded
-        st.header("🔒 PDF PII Redactor - Proof of Concept")
-        st.markdown("""
-        **🔒 Secure Document Processing (Proof of Concept)**
-        
-        This tool demonstrates how AI can help detect and redact Personally Identifiable Information (PII) from PDF documents. It is designed for testing, demonstration, and educational purposes only.
-        
-        **Potential use cases:** Exploring privacy workflows for legal, medical, financial, research, and other sensitive documents.
-        
-        _No guarantees of accuracy or compliance. Users are responsible for verifying all results. Not intended for production use._
-        """)
-        st.header("🔒 Privacy & Security")
-        st.markdown("""
-        - All processing happens locally or in secure cloud environments
-        - No data is stored or transmitted to third parties
-        - Your documents remain private and secure
-        """)
-        
-        st.header("📚 More Information")
-        st.markdown("""
-        **GitHub Repository:** [pdf-pii-redaction](https://github.com/milankmezic/pdf-pii-redaction)
-        
-        **Support & Feedback:**
-        - 📝 [Report Issues](https://github.com/milankmezic/pdf-pii-redaction/issues)
-        - 💡 [Request Features](https://github.com/milankmezic/pdf-pii-redaction/issues/new)
-        - 📖 [View Documentation](https://github.com/milankmezic/pdf-pii-redaction#readme)
-        - ⭐ [Star Repository](https://github.com/milankmezic/pdf-pii-redaction)
-        - 🔄 [Fork Project](https://github.com/milankmezic/pdf-pii-redaction/fork)
-        
-        **Commercial Use:** Commercial version managed by [NextAutomatica](https://nextautomatica.com)
-        
-        **Third-Party Libraries:** This project uses open-source libraries including Microsoft Presidio, PyMuPDF, pdfplumber, and others. Please refer to their respective licenses for commercial use.
-        """)
+        if st.session_state.get('process_mode') is None:
+            # Set default mode to browse
+            st.session_state.process_mode = 'browse'
+            st.rerun()
+        else:
+            # Default to browse mode if no specific mode is set
+            st.session_state.process_mode = 'browse'
+            st.rerun()
 
 if __name__ == "__main__":
     main() 

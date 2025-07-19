@@ -186,6 +186,43 @@ For questions, issues, or feature requests:
 - **PyMuPDF**: PDF processing and redaction
 - **Streamlit**: Web application framework
 
+## 📅 Version History
+
+### Version 2.1.0 - Enhanced File Browser (Latest)
+*December 2024*
+
+**🆕 New Features:**
+- **📁 Interactive Directory Browser**: Browse local directories with dropdown navigation
+- **📊 Multi-File Selection**: Select multiple PDF files using interactive dataframes
+- **🔗 URL Parameter Support**: Bookmarkable URLs that remember current directory (`?dir=/path/to/folder`)
+- **⚡ Auto-Navigation**: Automatic directory changes without manual "Go" button clicks
+- **🌐 URL Processing**: Direct processing of PDF files from web URLs
+- **📋 Batch Processing**: Process multiple selected files in one operation
+
+**🔧 Interface Improvements:**
+- File browser shows file size, modification dates, and organized navigation
+- Select All / Clear All buttons for quick file selection
+- Enhanced sidebar with three processing modes: Browse, URL, Upload
+- Streamlined information flow with details moved to disclaimer page
+- Real-time URL updates for easy bookmarking and sharing
+
+**🎯 User Experience:**
+- One-click directory navigation via dropdown
+- Persistent directory state across browser sessions
+- Improved visual feedback and progress indicators
+- Cleaner main interface focused on functionality
+
+### Version 1.0.0 - Initial Release
+*Earlier 2024*
+
+**Core Features:**
+- Single PDF file upload and processing
+- AI-powered PII detection using Microsoft Presidio
+- Local document processing for privacy
+- Professional PDF redaction with audit trails
+- OCR support for scanned documents
+- Streamlit web interface
+
 ## 📈 Roadmap
 
 - [ ] Multi-language support
