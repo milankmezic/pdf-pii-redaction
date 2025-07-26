@@ -29,6 +29,9 @@ _Disclaimer: This is a proof of concept. No guarantees of accuracy, completeness
 - **Government IDs**: Social Security numbers, passport numbers
 - **Business Data**: Trade secrets, proprietary information
 
+## Support us - become a sponsor
+- https://github.com/sponsors/milankmezic
+
 ## 🚀 Quick Start
 
 ### Prerequisites
